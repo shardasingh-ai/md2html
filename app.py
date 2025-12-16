@@ -451,10 +451,10 @@ def html_to_pdf_bytes(full_html: str) -> bytes:
 
             # IMPORTANT: margins are handled by .page padding (so keep pdf margins 0)
             pdf_bytes = page.pdf(
-                format="A4",
-                print_background=True,
-                margin={"top": "0mm", "bottom": "0mm", "left": "0mm", "right": "0mm"},
-            )
+    format="A4",
+    print_background=True,
+    margin={"top":"0mm","bottom":"0mm","left":"0mm","right":"0mm"},
+)
             browser.close()
 
         return pdf_bytes
