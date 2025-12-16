@@ -21,7 +21,14 @@ st.set_page_config(page_title="Nirnay MD → HTML/PDF", layout="centered")
 #    Key fix: @page margin:0 and .page padding in mm
 # ============================================================
 STANDARD_CSS = r"""
-@page { size: A4; margin: 0; } /* IMPORTANT: keep 0 */
+@page { size: A4; margin: 14mm 12mm; }   /* applies to every printed page */
+body { margin: 0; }
+
+.page { padding: 0; }                    /* default */
+
+@media screen {
+  .page { padding: 14mm 12mm; }          /* only for on-screen preview */
+}
 html, body { height: 100%; }
 
 body{
