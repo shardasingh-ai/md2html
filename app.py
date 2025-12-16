@@ -1,29 +1,43 @@
 import re
 import io
+import sys
 import tempfile
+import subprocess
 from pathlib import Path
 
 import streamlit as st
 import markdown as mdlib
 from bs4 import BeautifulSoup
 
-# Playwright for PDF
-from playwright.sync_api import sync_playwright
+
+# ============================================================
+# Streamlit config
+# ============================================================
+st.set_page_config(page_title="Nirnay MD → HTML/PDF", layout="centered")
 
 
 # ============================================================
-# 1) YOUR STANDARD CSS (FINAL)
+# 1) YOUR STANDARD CSS (UPDATED: margins enforced via .page)
+#    Key fix: @page margin:0 and .page padding in mm
 # ============================================================
 STANDARD_CSS = r"""
-@page { size: A4; margin: 14mm 12mm; }
+@page { size: A4; margin: 0; } /* IMPORTANT: keep 0 */
 html, body { height: 100%; }
+
 body{
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
   color: #0f2433;
   text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
 }
+
+/* IMPORTANT: this enforces visible margins for HTML print + PDF */
+.page{
+  padding: 14mm 12mm;
+}
+
 .book{ width: 100%; }
+
 .prose{
   column-count: 2;
   column-gap: 18mm;
@@ -32,6 +46,7 @@ body{
   font-size: 12.2px;
   line-height: 1.55;
 }
+
 .prose *{ box-sizing: border-box; }
 .prose p{ margin: 0 0 8px 0; }
 .prose strong{ font-weight: 800; }
@@ -250,15 +265,27 @@ body{
 
 
 # ============================================================
-# 2) Core renderer (MD -> HTML with boxes + grid tables)
+# 2) Playwright setup (fix for Streamlit Cloud)
+# ============================================================
+@st.cache_resource
+def ensure_playwright_chromium():
+    """
+    Streamlit Cloud: Playwright package installs fine, but Chromium binary often isn't present.
+    This downloads the Chromium browser once per container.
+    """
+    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+
+
+# ============================================================
+# 3) Markdown → HTML (your rules)
 # ============================================================
 SECTION_RE = re.compile(r"^\s*([1-6])\.\s+", re.I)
 
 def cleanup_markdown(md: str) -> str:
     md = re.sub(r"(?m)^\s*#{1,6}\s*$\n?", "", md)  # remove empty headings
-    md = re.sub(r"\\([\\`*_{}\[\]()#+\-.!|>~])", r"\1", md)  # unescape markdown punctuation
+    md = re.sub(r"\\([\\`*_{}\[\]()#+\-.!|>~])", r"\1", md)  # unescape punctuation
 
-    # ensure blank line after table row if next is heading
+    # ensure blank line after table row if next line is a heading
     lines = md.splitlines()
     out = []
     for i, line in enumerate(lines):
@@ -325,17 +352,19 @@ def tables_to_gridtables(soup: BeautifulSoup) -> None:
             append_fragment(c1, r[0])
             c2 = soup.new_tag("div", **{"class": "gt-cell"})
             append_fragment(c2, r[1])
-            row.append(c1); row.append(c2)
+            row.append(c1)
+            row.append(c2)
             gt.append(row)
 
         tbl.replace_with(gt)
 
 def wrap_sections_and_tag_topics(soup: BeautifulSoup) -> None:
-    # tag topic titles
+    # Tag topic titles
     for h2 in soup.find_all("h2"):
         if is_topic_title(h2):
             h2["class"] = (h2.get("class", []) + ["topic-title"])
 
+    # Wrap sections 1,2,4,5,6 for every article/topic
     num_to_class = {1: "syllabus", 2: "context", 4: "beyond", 5: "prelims", 6: "mains"}
     headings = soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"])
 
@@ -369,7 +398,7 @@ def wrap_sections_and_tag_topics(soup: BeautifulSoup) -> None:
             if n in num_to_class:
                 wrap_from(h, num_to_class[n])
 
-def md_to_html(md_text: str, title_fallback: str = "NIRNAY DAILY CA") -> str:
+def md_to_full_html(md_text: str, title_fallback: str) -> str:
     md_text = cleanup_markdown(md_text)
     body = mdlib.markdown(md_text, extensions=["tables"])
     body = re.sub(r"<p>\s*######\s*</p>\s*", "", body, flags=re.I)
@@ -390,34 +419,41 @@ def md_to_html(md_text: str, title_fallback: str = "NIRNAY DAILY CA") -> str:
   <style>{STANDARD_CSS}</style>
 </head>
 <body>
-  <article class="book">
-    <div class="prose">
-      {str(soup)}
-    </div>
-  </article>
+  <div class="page">
+    <article class="book">
+      <div class="prose">
+        {str(soup)}
+      </div>
+    </article>
+  </div>
 </body>
 </html>
 """
 
 
 # ============================================================
-# 3) HTML -> PDF (Playwright)
+# 4) HTML → PDF bytes (Playwright)
 # ============================================================
-def html_to_pdf_bytes(html: str) -> bytes:
+def html_to_pdf_bytes(full_html: str) -> bytes:
+    # Lazy import to keep app start lighter
+    from playwright.sync_api import sync_playwright
+
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         html_path = td / "doc.html"
-        html_path.write_text(html, encoding="utf-8")
+        html_path.write_text(full_html, encoding="utf-8")
 
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page()
             page.goto(html_path.as_uri(), wait_until="networkidle")
+            page.emulate_media(media="print")
 
+            # IMPORTANT: margins are handled by .page padding (so keep pdf margins 0)
             pdf_bytes = page.pdf(
                 format="A4",
                 print_background=True,
-                margin={"top": "14mm", "bottom": "14mm", "left": "12mm", "right": "12mm"},
+                margin={"top": "0mm", "bottom": "0mm", "left": "0mm", "right": "0mm"},
             )
             browser.close()
 
@@ -425,12 +461,10 @@ def html_to_pdf_bytes(html: str) -> bytes:
 
 
 # ============================================================
-# 4) Streamlit UI
+# 5) UI
 # ============================================================
-st.set_page_config(page_title="Nirnay MD → HTML/PDF", layout="centered")
-
 st.title("Nirnay Daily CA — Markdown to HTML + PDF")
-st.caption("Upload a .md file → get consistent 2-column Nirnay HTML + PDF downloads.")
+st.caption("Upload a .md file → get consistent Nirnay 2-column HTML and PDF downloads.")
 
 uploaded = st.file_uploader("Upload Markdown file", type=["md", "markdown"])
 
@@ -438,36 +472,47 @@ if uploaded:
     md_text = uploaded.read().decode("utf-8", errors="ignore")
     base_name = Path(uploaded.name).stem
 
-    html = md_to_html(md_text, title_fallback=base_name)
+    full_html = md_to_full_html(md_text, title_fallback=base_name)
 
     st.success("Rendered HTML successfully.")
 
-    # Preview
     with st.expander("Preview (HTML)", expanded=False):
-        st.components.v1.html(html, height=650, scrolling=True)
+        st.components.v1.html(full_html, height=650, scrolling=True)
 
-    # Download HTML
     st.download_button(
         "Download HTML",
-        data=html.encode("utf-8"),
+        data=full_html.encode("utf-8"),
         file_name=f"{base_name}_nirnay.html",
         mime="text/html",
     )
 
-    # PDF generation
     if st.button("Generate PDF"):
         try:
-            pdf_bytes = html_to_pdf_bytes(html)
+            with st.spinner("Preparing PDF engine (Chromium) ..."):
+                ensure_playwright_chromium()
+
+            with st.spinner("Rendering PDF ..."):
+                pdf_bytes = html_to_pdf_bytes(full_html)
+
             st.download_button(
                 "Download PDF",
                 data=pdf_bytes,
                 file_name=f"{base_name}_nirnay.pdf",
                 mime="application/pdf",
             )
+            st.success("PDF ready.")
+        except subprocess.CalledProcessError as e:
+            st.error(
+                "Playwright could not install Chromium in this environment.\n\n"
+                "Make sure your Streamlit Cloud repo includes:\n"
+                "1) requirements.txt with 'playwright'\n"
+                "2) packages.txt with required system libraries\n\n"
+                f"Install error:\n{e}"
+            )
         except Exception as e:
             st.error(
-                "PDF generation failed. If you're running locally, make sure Playwright "
-                "and Chromium are installed:\n\n"
+                "PDF generation failed.\n\n"
+                "If running locally:\n"
                 "python -m playwright install chromium\n\n"
                 f"Error: {e}"
             )
